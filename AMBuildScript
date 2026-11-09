@@ -1,0 +1,206 @@
+import json, os, shutil, subprocess
+
+def resolve(option, env, folder):
+  if option:
+    return os.path.abspath(option)
+  path = os.environ.get(env)
+  if path and os.path.isdir(path):
+    return os.path.abspath(path)
+  head = os.getcwd()
+  while True:
+    candidate = os.path.join(head, folder)
+    if os.path.isdir(candidate):
+      return candidate
+    parent = os.path.dirname(head)
+    if parent == head:
+      return None
+    head = parent
+
+def tool(argv):
+  try:
+    return subprocess.check_output(argv, stderr=subprocess.DEVNULL).decode('utf8').split()
+  except (OSError, subprocess.CalledProcessError):
+    return None
+
+def static(name):
+  for folder in ['/usr/lib/x86_64-linux-gnu', '/usr/lib64', '/usr/lib', '/usr/local/lib']:
+    path = os.path.join(folder, 'lib{}.a'.format(name))
+    if os.path.isfile(path):
+      return path
+  return None
+
+class PluginConfig(object):
+  def __init__(self):
+    with open(os.path.join(builder.sourcePath, 'plugin.json')) as fp:
+      self.meta = json.load(fp)
+
+    self.mms_root = resolve(builder.options.mms_path, 'MMSOURCE20', 'metamod-source')
+    if not self.mms_root:
+      raise Exception('Metamod:Source not found, set MMSOURCE20 or pass --mms_path')
+
+    manifests = resolve(builder.options.hl2sdk_manifests, 'HL2SDKMANIFESTS', 'hl2sdk-manifests')
+    if not manifests:
+      manifests = os.path.join(self.mms_root, 'hl2sdk-manifests')
+    self.helpers = builder.Eval(os.path.join(manifests, 'SdkHelpers.ambuild'), {'Project': 'metamod'})
+
+    self.cxx = builder.DetectCxx(target_arch='x86_64')
+    if self.cxx.target.platform != 'linux':
+      raise Exception('Only Linux is supported')
+
+    self.targets = []
+    self.tasks = []
+    self.info = None
+    self.sqlite = None
+
+  def SdkPath(self, name):
+    folder = 'hl2sdk-{}'.format(name)
+    if builder.options.hl2sdk_root:
+      path = os.path.join(builder.options.hl2sdk_root, folder)
+      if os.path.isdir(path):
+        return os.path.abspath(path)
+    return resolve(None, 'HL2SDK{}'.format(name.upper()), folder)
+
+  def Configure(self):
+    cxx = self.cxx
+    cxx.defines += [
+      'stricmp=strcasecmp',
+      '_stricmp=strcasecmp',
+      '_snprintf=snprintf',
+      '_vsnprintf=vsnprintf',
+      'HAVE_STDINT_H',
+      'GNUC',
+      'LINUX',
+      '_LINUX',
+      'POSIX',
+      '_FILE_OFFSET_BITS=64',
+    ]
+    cxx.cflags += [
+      '-pipe',
+      '-fno-strict-aliasing',
+      '-fvisibility=hidden',
+      '-Wall',
+      '-Werror',
+      '-Wno-sign-compare',
+      '-Wno-unused',
+      '-Wno-switch',
+      '-Wno-unknown-pragmas',
+      '-Wno-dangling-else',
+      '-msse',
+      '-fPIC',
+    ]
+    cxx.cxxflags += [
+      '-std=c++17',
+      '-fvisibility-inlines-hidden',
+      '-Wno-non-virtual-dtor',
+      '-Wno-overloaded-virtual',
+    ]
+
+    if cxx.family == 'clang':
+      cxx.cxxflags += [
+        '-Wno-implicit-exception-spec-mismatch',
+        '-Wno-expansion-to-defined',
+        '-Wno-inconsistent-missing-override',
+      ]
+      cxx.linkflags += ['-lgcc_eh']
+    else:
+      cxx.linkflags += ['-static-libgcc']
+    cxx.linkflags += ['-static-libstdc++']
+
+    if shutil.which('ld.lld') or shutil.which('lld'):
+      cxx.linkflags += ['-fuse-ld=lld', '-Wl,--no-gnu-unique']
+    else:
+      print('Warning: lld not found, the plugin may fail to unload cleanly')
+
+    if builder.options.opt == '1':
+      cxx.defines += ['NDEBUG']
+      cxx.cflags += ['-O3']
+    elif builder.options.debug == '1':
+      cxx.defines += ['DEBUG', '_DEBUG']
+      cxx.cflags += ['-g3']
+    cxx.cflags += ['-fno-omit-frame-pointer']
+
+  def DetectSdks(self):
+    self.helpers.find_sdk_path = self.SdkPath
+    self.helpers.findSdks(builder, [self.cxx], [s for s in builder.options.sdks.split(',') if s])
+    self.targets = self.helpers.sdk_targets
+
+  def Generate(self):
+    builder.SetBuildFolder('/')
+    keys = ['name', 'alias', 'display_name', 'description', 'author', 'url', 'log_tag', 'license', 'version']
+    lines = ['#pragma once']
+    for key in keys:
+      value = self.meta.get(key, '').replace('\\', '\\\\').replace('"', '\\"')
+      lines.append('#define PLUGIN_{} "{}"'.format(key.upper(), value))
+    self.info = builder.AddOutputFile(os.path.join('generated', 'info.h'), ('\n'.join(lines) + '\n').encode('utf8'))
+
+  def Sqlite(self):
+    lib = self.cxx.StaticLibrary('sqlite3')
+    lib.compiler.cflags = [flag for flag in lib.compiler.cflags if flag != '-Werror'] + ['-w']
+    lib.compiler.defines += ['SQLITE_OMIT_LOAD_EXTENSION', 'SQLITE_THREADSAFE=1']
+    lib.sources += [os.path.join(builder.sourcePath, 'vendor', 'sqlite', 'sqlite3.c')]
+    self.sqlite = builder.Add(lib).binary
+
+  def MySql(self, cxx):
+    include = tool(['mariadb_config', '--include']) or tool(['mysql_config', '--include']) or []
+    cxx.cxxincludes += [flag[2:] for flag in include if flag.startswith('-I')]
+
+    client = static('mariadbclient') or static('mysqlclient')
+    if not client:
+      raise Exception('Static MariaDB client not found, install libmariadb-dev')
+
+    libs = [client] + self.Pg(cxx)
+    for name in ['ssl', 'crypto', 'z']:
+      libs.append(static(name) or '-l' + name)
+
+    hidden = [os.path.basename(lib) for lib in libs if lib.endswith('.a')]
+    cxx.postlink += libs + ['-ldl', '-lpthread', '-lm', '-Wl,--exclude-libs,' + ':'.join(hidden)]
+
+  def Pg(self, cxx):
+    root = os.environ.get('PQ_ROOT', '/opt/pq')
+    cxx.cxxincludes += [os.path.join(root, 'include')]
+
+    libs = []
+    for name in ['pq', 'pgcommon_shlib', 'pgport_shlib']:
+      path = os.path.join(root, 'lib', 'lib{}.a'.format(name))
+      if not os.path.isfile(path):
+        raise Exception('Static libpq not found in {}, set PQ_ROOT'.format(root))
+      libs.append(path)
+    return libs
+
+  def Library(self, context, target):
+    sdk = target.sdk
+    binary = target.cxx.Library(self.meta['name'])
+    cxx = binary.compiler
+
+    root = context.currentSourcePath
+    cxx.cxxincludes += [
+      os.path.join(root, 'src'),
+      os.path.join(root, 'public'),
+      os.path.join(root, 'vendor', 'sqlite'),
+      os.path.join(builder.buildPath, 'generated'),
+      os.path.join(self.mms_root, 'core'),
+      os.path.join(self.mms_root, 'third_party', 'khook', 'include'),
+    ]
+    cxx.sourcedeps += [self.info]
+
+    for manifest in self.helpers.sdk_manifests:
+      cxx.defines += ['SE_{}={}'.format(manifest['define'], manifest['code'])]
+    cxx.defines += ['META_IS_SOURCE2']
+
+    binary.sources += [
+      os.path.join(sdk['path'], 'public', 'tier0', 'memoverride.cpp'),
+      os.path.join(sdk['path'], 'tier0_perproject', 'convar.cpp'),
+    ]
+
+    self.helpers.configureCxx(context, binary, sdk)
+    self.MySql(cxx)
+    cxx.postlink += [self.sqlite]
+    return binary
+
+Plugin = PluginConfig()
+Plugin.Configure()
+Plugin.DetectSdks()
+Plugin.Generate()
+Plugin.Sqlite()
+
+builder.Build(['AMBuilder', 'PackageScript'], {'Plugin': Plugin})

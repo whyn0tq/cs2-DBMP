@@ -1,0 +1,16 @@
+import os
+
+builder.SetBuildFolder('package')
+
+name = Plugin.meta['name']
+bin_path = os.path.join('addons', name, 'bin', 'linuxsteamrt64')
+metamod = os.path.join('addons', 'metamod')
+
+for folder in [bin_path, metamod]:
+  builder.AddFolder(folder)
+
+for task in Plugin.tasks:
+  builder.AddCopy(task.binary, os.path.join(bin_path, name + '.so'))
+
+vdf = '"Metamod Plugin"\n{\n\t"alias"\t"%s"\n\t"file"\t"%s"\n}\n' % (Plugin.meta['alias'], os.path.join(bin_path, name))
+builder.AddOutputFile(os.path.join(metamod, name + '.vdf'), vdf.encode('utf8'))

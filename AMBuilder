@@ -1,0 +1,29 @@
+import os
+
+sources = [
+  'src/plugin.cpp',
+  'src/log.cpp',
+  'src/owner.cpp',
+  'src/api.cpp',
+  'src/database_config.cpp',
+  'src/conn.cpp',
+  'src/registry.cpp',
+  'src/dispatcher.cpp',
+  'src/worker.cpp',
+  'src/backend/factory.cpp',
+  'src/backend/bind.cpp',
+  'src/backend/mysql.cpp',
+  'src/backend/pg.cpp',
+  'src/backend/sqlite.cpp',
+]
+
+for target in Plugin.targets:
+  binary = Plugin.Library(builder, target)
+  binary.sources += sources
+
+  proto = os.path.join(target.sdk['path'], 'thirdparty', 'game_protobufs', 'csgo')
+  if not os.path.isdir(proto):
+    proto = os.path.join(target.sdk['path'], 'common')
+  binary.custom = [builder.tools.Protoc(protoc=target.protoc, sources=[os.path.join(proto, 'network_connection.proto')])]
+
+  Plugin.tasks.append(builder.Add(binary))

@@ -1,0 +1,11 @@
+{
+    "name": "dbmp",
+    "alias": "db",
+    "display_name": "DBMP",
+    "description": "MySQL, PostgreSQL and SQLite connector",
+    "author": "teesa (whyn0tq)",
+    "url": "https://github.com/whyn0tq",
+    "log_tag": "DB",
+    "license": "GPLv3",
+    "version": "1.3.0"
+}
