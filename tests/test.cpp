@@ -7,6 +7,8 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <mysql.h>
 #include <string>
@@ -43,7 +45,12 @@ struct Env
     int owner = 1;
     Dispatcher out;
     Registry conns;
-    Api api{conns, out, "/tmp/dbmm-test", [this](const void*) { return owner; }};
+    Api api;
+
+    explicit Env(std::string base = std::filesystem::current_path().string())
+        : api(conns, out, std::move(base), [this](const void*) { return owner; })
+    {
+    }
 
     bool Pump(const std::function<bool()>& until, int seconds = 15)
     {
@@ -103,6 +110,33 @@ void TestValues()
     Check(big.Int() == 76561198000000000LL, "uint64 steamid");
     Check(sql::Value("42").Int() == 42 && sql::Value(2.5).Str() == "2.5" && sql::Value(7).Real() == 7.0, "conversions");
     Check(sql::Value(static_cast<const char*>(nullptr)).Null() && sql::Value().Null(), "null values");
+}
+
+void TestNamedDatabase()
+{
+    std::printf("== named database\n");
+    const auto base = std::filesystem::current_path() / "named-database-test";
+    std::filesystem::create_directories(base / "addons/configs");
+    std::ofstream config(base / "addons/configs/databases.cfg");
+    config << R"("Databases"
+{
+    "driver_default" "sqlite"
+    "verdict" { "database" ":memory:" }
+    "invalid" { "driver" "unknown" "database" "invalid" }
+})";
+    config.close();
+
+    Env env(base.string());
+    sql::IApiV2& api = env.api;
+    Check(!api.Open("invalid"), "invalid driver rejected");
+    auto* db = api.Open("verdict");
+    Check(db && db->Type() == sql::Kind::SQLite, "named connection opens with configured default driver");
+    if (db)
+    {
+        auto result = env.Wait(db, "SELECT ? AS value", {42});
+        Check(result.Ok() && result.Next() && result.Int("value") == 42, "query through named connection");
+        db->Close();
+    }
 }
 
 void Suite(Env& env, const sql::Config& cfg, const char* tag, const char* create, const std::string& escaped, bool ids)
@@ -273,6 +307,7 @@ int main()
 
     TestBind();
     TestValues();
+    TestNamedDatabase();
 
     {
         Env env;

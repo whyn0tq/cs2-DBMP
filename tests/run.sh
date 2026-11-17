@@ -15,7 +15,7 @@ $CC -O1 -w -fPIC $FLAGS -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=1 -c "$
 $CXX -std=c++17 -O1 -g -Wall -Werror -pthread $FLAGS \
     -I"$ROOT/tests" -I"$ROOT/src" -I"$ROOT/public" -I"$ROOT/vendor/sqlite" -I"$PQ/include" $(mariadb_config --include) \
     "$ROOT/tests/test.cpp" \
-    "$ROOT/src/api.cpp" "$ROOT/src/conn.cpp" "$ROOT/src/registry.cpp" "$ROOT/src/dispatcher.cpp" \
+    "$ROOT/src/api.cpp" "$ROOT/src/database_config.cpp" "$ROOT/src/conn.cpp" "$ROOT/src/registry.cpp" "$ROOT/src/dispatcher.cpp" \
     "$ROOT/src/worker.cpp" \
     "$ROOT/src/backend/factory.cpp" "$ROOT/src/backend/bind.cpp" "$ROOT/src/backend/mysql.cpp" \
     "$ROOT/src/backend/pg.cpp" "$ROOT/src/backend/sqlite.cpp" \

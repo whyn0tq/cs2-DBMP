@@ -48,6 +48,9 @@ jobs:
             -v "$GITHUB_WORKSPACE/deps/hl2sdk-cs2:/deps/hl2sdk-cs2" \
             dbmp-builder
 
+      - name: Test database backends
+        run: docker run --rm -v "$GITHUB_WORKSPACE:/src:ro" dbmp-builder sh /src/tests/run.sh
+
       - name: Create archive
         id: package
         run: |
